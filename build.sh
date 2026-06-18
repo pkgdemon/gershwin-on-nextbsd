@@ -85,6 +85,13 @@ cp -aR "$CWD/overlays/." "$ROOTFS/"
 rm -f "$ROOTFS/System/Library/LaunchDaemons/com.apple.getty.plist"
 chroot "$ROOTFS" /bin/sh -c 'command -v dscli >/dev/null 2>&1 && dscli init || true'
 
+# Live 'admin' account with an empty password (the greeter logs in with no password).
+echo "==> creating live 'admin' account (empty password)"
+chroot "$ROOTFS" /bin/sh -c '
+    pw useradd admin -m -G wheel -s /bin/sh -c "Gershwin Admin" 2>/dev/null || true
+    pw usermod admin -w none
+'
+
 # strip build scratch; normalise ownership before makefs bakes the tree in
 rm -rf "$ROOTFS/build" "$ROOTFS/private/etc/resolv.conf"
 umount "$ROOTFS/dev" || true

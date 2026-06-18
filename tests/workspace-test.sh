@@ -7,7 +7,8 @@ set -u
 SOCK=tests/mon.sock
 mon() { printf '%s\n' "$*" | socat -t2 - "UNIX-CONNECT:$SOCK" >/dev/null 2>&1 || true; }
 
-sleep 5
+# Give the session (GWorkspace/WindowMaker) time to start and paint.
+sleep 20
 mon "screendump tests/desktop.ppm"
 sleep 2
 [ -f tests/desktop.ppm ] || { echo "[workspace-test] FAIL: no screendump produced"; exit 1; }
