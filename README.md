@@ -20,5 +20,4 @@ release on every push to `main`.
 | `build.sh` | Download image → chroot-build Gershwin → repackage live ISO. Runs inside a FreeBSD VM. |
 | `.github/workflows/build.yml` | build → boot-test → publish continuous release. |
 | `tests/boot-test.sh` | Boots the ISO under qemu/OVMF and asserts the `vfs.pivot` live-root pipeline. |
-| `tools/freebsd/` | Vendored FreeBSD release scripts (`mkisoimages.sh` + deps) used to bake the bootable cd9660. |
 | `overlays/System/Library/LaunchDaemons/` | Gershwin launchd jobs added to the image (`loginwindow`, `dshelper`, `gdomap`). |

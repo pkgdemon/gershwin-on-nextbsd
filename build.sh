@@ -13,6 +13,7 @@
 set -eu
 
 ARCH=${TARGET_ARCH:-amd64}
+FREEBSD_VERSION=${FREEBSD_VERSION:-15.0}
 LABEL=GERSHWIN
 CWD=$(cd "$(dirname "$0")" && pwd)
 WORK=/usr/local/gon-build
@@ -201,8 +202,19 @@ vfs.root.mountfrom="ufs:/dev/md0"
 LIVEEOF
 cp "$WORK/rootfs.uzip" "$ISOROOT/rootfs.uzip"
 
+# Use FreeBSD's stock release scripts from src.txz (matching the base version),
+# exactly as nextbsd-redux/nextbsd does — the full tree resolves mkisoimages.sh's
+# relative sources (scripts/tools.subr, tools/boot/install-boot.sh).
+echo "==> fetching FreeBSD ${FREEBSD_VERSION} src.txz for release scripts"
+SRC="$WORK/freebsd-src"
+mkdir -p "$SRC"
+fetch -o "$WORK/src.txz" "https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-RELEASE/src.txz"
+tar -xJf "$WORK/src.txz" -C "$SRC"
+MKISO=$(find "$SRC" -path "*/release/${ARCH}/mkisoimages.sh" 2>/dev/null | head -1)
+[ -n "$MKISO" ] || { echo "ERROR: mkisoimages.sh not found in src.txz" >&2; exit 1; }
+
 echo "==> mkisoimages.sh: bootable cd9660 (BIOS + UEFI)"
-sh "$CWD/tools/freebsd/release/amd64/mkisoimages.sh" -b "$LABEL" "$OUT/$ISO_NAME" "$ISOROOT"
+sh "$MKISO" -b "$LABEL" "$OUT/$ISO_NAME" "$ISOROOT"
 ( cd "$OUT" && sha256 -q "$ISO_NAME" > "$ISO_NAME.sha256" 2>/dev/null || sha256sum "$ISO_NAME" | awk '{print $1}' > "$ISO_NAME.sha256" )
 ls -lh "$OUT/$ISO_NAME" "$OUT/$ISO_NAME.sha256"
 echo "==> DONE: $ISO_NAME"
