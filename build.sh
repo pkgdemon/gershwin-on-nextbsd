@@ -83,7 +83,12 @@ chroot "$ROOTFS" /bin/sh -eu -c '
 echo "==> applying Gershwin launchd overlay (getty -> loginwindow)"
 cp -aR "$CWD/overlays/." "$ROOTFS/"
 rm -f "$ROOTFS/System/Library/LaunchDaemons/com.apple.getty.plist"
-chroot "$ROOTFS" /bin/sh -c 'command -v dscli >/dev/null 2>&1 && dscli init || true'
+# Initialize Gershwin DirectoryServices so loginwindow can authenticate: dscli
+# init creates /Local (the local DS node) and /Volumes. dscli ships in
+# /System/Library/Tools (the DirectoryServices component), which is only on
+# PATH once GNUstep.sh is sourced -- so source it first, then init inside the
+# chroot. Must succeed: without it the greeter has no directory to auth against.
+chroot "$ROOTFS" /bin/sh -c '. /System/Library/Makefiles/GNUstep.sh && dscli init'
 
 # Live 'admin' account with an empty password (the greeter logs in with no password).
 echo "==> creating live 'admin' account (empty password)"
