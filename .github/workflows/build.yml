@@ -94,7 +94,7 @@ jobs:
       - name: Install qemu + ovmf + tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf socat imagemagick
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf socat imagemagick tesseract-ocr
 
       - name: Launch VM (serial + VGA + monitor)
         run: |
