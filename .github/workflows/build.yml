@@ -1,0 +1,116 @@
+name: Build Gershwin-on-NextBSD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (NextBSD amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ISO inside FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          usesh: true
+          sync: rsync
+          copyback: true
+          cpu: 4
+          mem: 8192
+          prepare: |
+            pkg install -y jq unzip
+          run: |
+            set -e
+            export TARGET_ARCH=amd64
+            export GERSHWIN_REF=main
+            /bin/sh ./build.sh
+            ls -lh /usr/local/gon-build/iso/
+            mkdir -p artifacts/NextBSD/amd64
+            cp /usr/local/gon-build/iso/*.iso* artifacts/NextBSD/amd64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gershwin-on-nextbsd-amd64
+          path: artifacts/NextBSD/amd64
+          if-no-files-found: error
+
+  test:
+    name: boot-test (NextBSD amd64)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gershwin-on-nextbsd-amd64
+          path: artifacts/NextBSD/amd64
+
+      - name: install qemu + expect + ovmf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 expect ovmf
+
+      - name: boot test
+        run: |
+          ISO=$(ls artifacts/NextBSD/amd64/*.iso 2>/dev/null | head -1)
+          if [ -z "$ISO" ]; then
+            echo "no iso found in artifacts/NextBSD/amd64/"
+            ls -laR artifacts/
+            exit 1
+          fi
+          chmod +x tests/boot-test.sh
+          ./tests/boot-test.sh "$ISO"
+
+      - name: upload boot log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-log
+          path: tests/boot.log
+          if-no-files-found: ignore
+
+  release:
+    name: publish continuous release
+    needs: [build, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gershwin-on-nextbsd-amd64
+          path: artifacts/NextBSD/amd64
+
+      - name: Publish to continuous release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          cd artifacts/NextBSD/amd64
+          assets=(*.iso *.iso.sha256)
+          ls -lh "${assets[@]}"
+
+          TAG="continuous"
+          NOTES="GitHub Actions build log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          # Recreate the rolling release so old assets don't accumulate.
+          gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Continuous build" \
+            --notes "$NOTES" \
+            --prerelease \
+            "${assets[@]}"
