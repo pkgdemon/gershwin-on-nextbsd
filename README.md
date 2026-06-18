@@ -13,6 +13,10 @@ uzip-compressed root plus a tmpfs/unionfs writable overlay, then
 A fresh ISO is published to the rolling [`continuous`](../../releases/tag/continuous)
 release on every push to `main`.
 
+![Gershwin on NextBSD desktop](docs/desktop.png)
+
+*(Screenshot auto-captured by CI after booting the live ISO and logging in.)*
+
 ## Layout
 
 | Path | Purpose |

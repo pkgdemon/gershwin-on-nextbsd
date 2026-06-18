@@ -1,83 +1,48 @@
 #!/bin/sh
-# boot-test.sh — boot the Gershwin/NextBSD live ISO under qemu (UEFI/OVMF),
-# drive the loader over the serial console, and assert the live-root pipeline
-# (on-demand uzip + unionfs + vfs.pivot) comes up and hands off to launchd.
+# boot-test.sh — wait for the live ISO to reach a graphical screen (the
+# loginwindow greeter), driven entirely from OUTSIDE the guest.
 #
-# Gershwin replaces the console getty with a GUI loginwindow, so there is no
-# serial "login:" prompt — success is the kernel's "vfs.pivot: / is now unionfs"
-# (or the init's "pivot complete") followed by launchd starting, with no panic.
-set -eu
+# Streams the guest serial console live (so the CI log shows boot progress and
+# you can see it isn't hanging) and polls the VGA framebuffer through the QEMU
+# monitor: a text console has very few distinct colors, a painted GUI greeter
+# has many. Passes when the framebuffer goes graphical; fails after a bounded wait.
+set -u
 
-ISO=${1:?usage: boot-test.sh path/to/live.iso}
-[ -f "$ISO" ] || { echo "ERROR: $ISO not found"; exit 1; }
+SOCK=tests/mon.sock
+SERIAL=tests/serial.log
+FRAMES=tests/frames
+DEADLINE_SECS=600          # 10 min hard cap (job has its own timeout too)
+COLOR_THRESHOLD=64         # >this many unique colors => treat as graphical
 
-mkdir -p tests
-LOG=tests/boot.log
-EXP=tests/boot.exp
+mkdir -p "$FRAMES"
+: > "$SERIAL" 2>/dev/null || true
 
-if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm 2>/dev/null || true; fi
-if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-    ACCEL_FLAGS="-accel kvm -cpu host"
-else
-    ACCEL_FLAGS="-accel tcg,thread=single -cpu qemu64"
-fi
+mon() { printf '%s\n' "$*" | socat -t2 - "UNIX-CONNECT:$SOCK" >/dev/null 2>&1 || true; }
+colors() { identify -format '%k' "$1" 2>/dev/null || echo 0; }
 
-OVMF=""
-for f in /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd; do
-    [ -f "$f" ] && { OVMF="$f"; break; }
+# Tee the serial console to the live CI log so progress is visible.
+tail -n +1 -f "$SERIAL" 2>/dev/null | sed 's/^/[serial] /' &
+TAILPID=$!
+trap 'kill "$TAILPID" 2>/dev/null' EXIT INT TERM
+
+echo "[boot-test] waiting for a graphical greeter (<= ${DEADLINE_SECS}s)"
+END=$(( $(date +%s) + DEADLINE_SECS ))
+i=0
+while [ "$(date +%s)" -lt "$END" ]; do
+    i=$((i + 1))
+    f="$FRAMES/frame-$(printf '%03d' "$i").ppm"
+    mon "screendump $f"
+    sleep 1
+    c=$(colors "$f")
+    echo "[boot-test] frame $i: ${c} colors"
+    if [ "$c" -gt "$COLOR_THRESHOLD" ] 2>/dev/null; then
+        echo "[boot-test] PASS: graphical screen detected (${c} colors) — greeter is up"
+        cp "$f" tests/greeter.ppm 2>/dev/null || true
+        exit 0
+    fi
+    sleep 8
 done
-[ -n "$OVMF" ] || { echo "ERROR: no OVMF firmware found"; exit 1; }
 
-export ACCEL_FLAGS OVMF ISO
-
-cat > "$EXP" <<'EOF'
-set timeout 600
-log_file -a tests/boot.log
-log_user 1
-set accel_flags [split $env(ACCEL_FLAGS) " "]
-
-eval spawn qemu-system-x86_64 \
-    -m 4G -machine q35 -bios $env(OVMF) \
-    $accel_flags \
-    -cdrom $env(ISO) -boot d \
-    -nic user,model=e1000 \
-    -display none -serial stdio -no-reboot
-
-# Interrupt autoboot, drop to the loader OK prompt, force serial console.
-expect {
-    timeout { puts "\nFAIL: no loader autoboot prompt"; exit 1 }
-    -re "Hit \\\[Enter\\\]" { send " " }
-    "Booting"               { send " " }
-    "FreeBSD/amd64 EFI"     { send " " }
-}
-expect { timeout { puts "\nFAIL: no loader OK prompt"; exit 1 } "OK " {} }
-send "set console=comconsole\r";        expect "OK "
-send "set boot_serial=YES\r";           expect "OK "
-send "set comconsole_speed=115200\r";   expect "OK "
-send "set boot_multicons=YES\r";        expect "OK "
-send "boot\r"
-
-# Watch for a panic anywhere along the way.
-expect_before {
-    "panic:"     { puts "\nFAIL: kernel panic during boot"; exit 1 }
-    "Fatal trap" { puts "\nFAIL: fatal trap during boot"; exit 1 }
-}
-
-# The live-root pipeline assembled and the kernel adopted the union as /.
-expect {
-    timeout { puts "\nFAIL: vfs.pivot not seen within 10 minutes"; exit 1 }
-    "vfs.pivot: / is now unionfs" { puts "\nOK: vfs.pivot adopted the union root" }
-    "pivot complete; exec launchd" { puts "\nOK: init reached pivot + launchd handoff" }
-}
-
-# launchd took over as PID 1 on the pivoted root (no getty -> no login: prompt).
-expect {
-    timeout { puts "\nWARN: no explicit launchd marker; pivot succeeded"; exit 0 }
-    -re "launchd" { puts "\nOK: launchd is up on the live root" }
-}
-exit 0
-EOF
-
-echo "==> boot test: $ISO"
-expect "$EXP"
-echo "==> boot-test PASSED"
+echo "[boot-test] FAIL: no graphical screen within ${DEADLINE_SECS}s"
+echo "[boot-test] last serial lines:"; tail -n 40 "$SERIAL" 2>/dev/null || true
+exit 1

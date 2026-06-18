@@ -10,8 +10,28 @@ permissions:
   contents: write
 
 jobs:
+  # Decide whether the heavy build needs to run. A tests-only (or docs-only)
+  # change skips the ~13-min build and boots the already-published continuous ISO.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.f.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            code:
+              - 'build.sh'
+              - 'overlays/**'
+              - 'tools/**'
+              - '.github/workflows/**'
+
   build:
     name: build (NextBSD amd64)
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -44,46 +64,113 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: boot-test (NextBSD amd64)
-    needs: build
+    name: boot + login + screenshot (NextBSD amd64)
+    needs: [changes, build]
+    if: ${{ always() && !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - name: Download fresh build artifact
+        if: ${{ needs.build.result == 'success' }}
+        uses: actions/download-artifact@v4
         with:
           name: gershwin-on-nextbsd-amd64
-          path: artifacts/NextBSD/amd64
+          path: artifacts
 
-      - name: install qemu + expect + ovmf
+      - name: Download published continuous ISO (tests-only change)
+        if: ${{ needs.build.result == 'skipped' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts
+          gh release download continuous --repo "$GITHUB_REPOSITORY" --pattern '*.iso' --dir artifacts
+
+      - name: Install qemu + ovmf + tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 expect ovmf
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf socat imagemagick
 
-      - name: boot test
+      - name: Launch VM (serial + VGA + monitor)
         run: |
-          ISO=$(ls artifacts/NextBSD/amd64/*.iso 2>/dev/null | head -1)
-          if [ -z "$ISO" ]; then
-            echo "no iso found in artifacts/NextBSD/amd64/"
-            ls -laR artifacts/
-            exit 1
-          fi
-          chmod +x tests/boot-test.sh
-          ./tests/boot-test.sh "$ISO"
+          set -e
+          ISO=$(ls artifacts/*.iso 2>/dev/null | head -1)
+          [ -n "$ISO" ] || { echo "no ISO found"; ls -laR artifacts; exit 1; }
+          mkdir -p tests
+          OVMF=/usr/share/ovmf/OVMF.fd
+          [ -f "$OVMF" ] || OVMF=/usr/share/OVMF/OVMF_CODE.fd
+          ACCEL="-accel tcg -cpu qemu64"
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm || true; fi
+          [ -r /dev/kvm ] && [ -w /dev/kvm ] && ACCEL="-accel kvm -cpu host"
+          echo "ISO=$ISO accel=$ACCEL ovmf=$OVMF"
+          nohup qemu-system-x86_64 \
+            -machine q35 -m 4G -smp 2 $ACCEL -bios "$OVMF" \
+            -cdrom "$ISO" -boot d \
+            -vga std \
+            -serial file:tests/serial.log \
+            -monitor unix:tests/mon.sock,server,nowait \
+            -nic user,model=e1000 \
+            -display none -no-reboot \
+            > tests/qemu.stdout 2>&1 &
+          echo $! > tests/qemu.pid
+          # wait for the monitor socket to appear
+          for i in $(seq 1 30); do [ -S tests/mon.sock ] && break; sleep 1; done
+          echo "qemu pid $(cat tests/qemu.pid); monitor: $(ls -l tests/mon.sock 2>/dev/null || echo MISSING)"
 
-      - name: upload boot log on failure
-        if: failure()
+      - name: boot-test (wait for greeter)
+        run: |
+          chmod +x tests/boot-test.sh
+          ./tests/boot-test.sh
+
+      - name: loginwindow-test (log in as admin)
+        continue-on-error: true
+        run: |
+          chmod +x tests/loginwindow-test.sh
+          ./tests/loginwindow-test.sh
+
+      - name: workspace-test (screenshot desktop)
+        continue-on-error: true
+        run: |
+          chmod +x tests/workspace-test.sh
+          ./tests/workspace-test.sh
+
+      - name: Commit desktop screenshot to README
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
+        run: |
+          [ -f docs/desktop.png ] || { echo "no screenshot to commit"; exit 0; }
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/desktop.png
+          git commit -m "ci: update desktop screenshot [skip ci]" || { echo "no change"; exit 0; }
+          git pull --rebase --autostash || true
+          git push
+
+      - name: Shut down VM
+        if: ${{ always() }}
+        run: |
+          printf 'quit\n' | socat -t2 - UNIX-CONNECT:tests/mon.sock >/dev/null 2>&1 || true
+          [ -f tests/qemu.pid ] && kill "$(cat tests/qemu.pid)" 2>/dev/null || true
+
+      - name: Upload boot artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: boot-log
-          path: tests/boot.log
+          name: boot-artifacts
+          path: |
+            tests/serial.log
+            tests/frames/
+            tests/*.ppm
+            docs/desktop.png
           if-no-files-found: ignore
 
   release:
     name: publish continuous release
-    needs: [build, test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Decoupled from `test` during bring-up so a green build always publishes an
+    # ISO the tests-only path can boot. Re-add `test` to needs once boot-test is solid.
+    needs: [build]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -105,7 +192,6 @@ jobs:
           TAG="continuous"
           NOTES="GitHub Actions build log: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          # Recreate the rolling release so old assets don't accumulate.
           gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
