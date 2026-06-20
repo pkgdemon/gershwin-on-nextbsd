@@ -3,7 +3,8 @@
 #
 # Runs inside a FreeBSD VM (vmactions). It downloads NextBSD's latest
 # continuous disk image, builds the Gershwin desktop into a copy of its rootfs
-# via chroot, drops getty in favour of Gershwin's loginwindow, and repackages
+# via chroot, adds Gershwin's loginwindow as the primary login UI (keeping the
+# base getty as a rescue console on the other VTs), and repackages
 # the result into a live ISO that boots exactly like NextBSD's own — a tiny
 # mfsroot assembles an on-demand uzip-compressed root + tmpfs/unionfs overlay,
 # then `sysctl vfs.pivot` adopts the union as / and execs launchd.
@@ -78,11 +79,17 @@ chroot "$ROOTFS" /bin/sh -eu -c '
 [ -d "$ROOTFS/System/Library" ] || { echo "ERROR: /System was not produced" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# 4. Gershwin launchd overlay: add loginwindow/dshelper/gdomap, drop getty.
+# 4. Gershwin launchd overlay: add loginwindow/dshelper/gdomap (keep base getty).
 # ---------------------------------------------------------------------------
-echo "==> applying Gershwin launchd overlay (getty -> loginwindow)"
+echo "==> applying Gershwin launchd overlay (loginwindow alongside getty)"
 cp -aR "$CWD/overlays/." "$ROOTFS/"
-rm -f "$ROOTFS/System/Library/LaunchDaemons/com.apple.getty.plist"
+# Keep NextBSD's base getty job (com.apple.getty.plist). launchd is PID 1 and
+# does not read /etc/ttys, so loginwindow is the only login path once getty is
+# removed -- if the greeter/X dies there is no console login on any VT and the
+# machine is reachable only via SSH. Retaining getty leaves a text rescue
+# console on the other VTs. loginwindow stays the primary GUI greeter; pinning
+# X to a dedicated VT (so getty and X never contend for one) is a follow-up in
+# the loginwindow component, which is where Xorg is actually launched.
 # Initialize Gershwin DirectoryServices so loginwindow can authenticate: dscli
 # init creates /Local (the local DS node) and /Volumes. dscli ships in
 # /System/Library/Tools (the DirectoryServices component), which is only on
