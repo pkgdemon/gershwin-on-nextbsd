@@ -9,7 +9,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>org.gershwin.loginwindow</string>
+    <string>io.github.gershwin-desktop.loginwindow</string>
     <key>ProgramArguments</key>
     <array>
         <string>/System/Library/Scripts/LoginWindow.sh</string>

@@ -8,10 +8,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>org.gershwin.dshelper</string>
+    <string>io.github.gershwin-desktop.dshelper</string>
     <key>ProgramArguments</key>
     <array>
         <string>/System/Library/Tools/dshelper</string>
+        <string>-d</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
