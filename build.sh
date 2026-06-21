@@ -14,7 +14,7 @@
 set -eu
 
 ARCH=${TARGET_ARCH:-amd64}
-FREEBSD_VERSION=${FREEBSD_VERSION:-15.0}
+FREEBSD_VERSION=${FREEBSD_VERSION:-15.1}
 LABEL=GERSHWIN
 CWD=$(cd "$(dirname "$0")" && pwd)
 WORK=/usr/local/gon-build

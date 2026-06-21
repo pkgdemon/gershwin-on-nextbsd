@@ -44,7 +44,7 @@ jobs:
       - name: Build ISO inside FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
-          release: "15.0"
+          release: "15.1"
           usesh: true
           sync: rsync
           copyback: true
